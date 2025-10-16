@@ -57,9 +57,22 @@
     <!-- Firebase Imports -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, query, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- HARDCODED FIREBASE CONFIGURATION (Using user's provided details) ---
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDSpnfJnbdl0cSt0_Aoxy3seEYUvqsvsuw",
+            authDomain: "dnx-miner.firebaseapp.com",
+            projectId: "dnx-miner",
+            storageBucket: "dnx-miner.firebasestorage.app",
+            messagingSenderId: "262576543527",
+            appId: "1:262576543527:web:9ccb7b82f84e837e5c3b02",
+            measurementId: "G-DN42XZC24V"
+        };
+        const appId = "dnx-miner"; // Project ID used as the app ID for firestore path
+        // -----------------------------------------------------------------------
 
         // Global Firebase instances and state
         window.db = null;
@@ -81,38 +94,30 @@
         window.displayRandomPrompt = displayRandomPrompt; 
         window.displayInitialPrompt = displayInitialPrompt; 
 
-        // Global variables provided by the environment
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
         setLogLevel('Debug');
 
         async function setupFirebase() {
-            if (Object.keys(firebaseConfig).length === 0) {
-                console.error("Firebase configuration is missing.");
+            if (!FIREBASE_CONFIG.projectId) {
+                console.error("Firebase configuration is incomplete.");
                 window.isAuthReady = true;
                 return;
             }
 
             try {
-                const app = initializeApp(firebaseConfig);
+                const app = initializeApp(FIREBASE_CONFIG);
                 window.db = getFirestore(app);
                 window.auth = getAuth(app);
 
-                // Initial sign-in attempt
-                if (initialAuthToken) {
-                    await signInWithCustomToken(window.auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(window.auth);
-                }
+                // For a standalone app, we sign in anonymously since there is no custom token backend.
+                await signInAnonymously(window.auth);
 
                 onAuthStateChanged(window.auth, (user) => {
                     if (user) {
                         window.userId = user.uid;
                         console.log("Authenticated with user ID:", window.userId);
                     } else {
-                        window.userId = null;
+                        // This case should not happen after signInAnonymously unless sign-out is explicit
+                        window.userId = null; 
                     }
                     window.isAuthReady = true;
                     // Only start loading game state once auth is confirmed
@@ -128,12 +133,14 @@
 
         function getMinerDocRef() {
             if (!window.db || !window.userId) return null;
-            const path = `artifacts/${appId}/users/${window.userId}/depth_nexus_data`;
+            // Uses the hardcoded 'appId' (which is 'dnx-miner')
+            const path = `artifacts/${appId}/users/${window.userId}/depth_nexus_data`; 
             return doc(window.db, path, 'miner_state');
         }
 
         function getJournalCollectionRef() {
             if (!window.db || !window.userId) return null;
+            // Uses the hardcoded 'appId'
             const path = `artifacts/${appId}/users/${window.userId}/journal_entries`;
             return collection(window.db, path);
         }
@@ -146,7 +153,7 @@
                 tapReward: window.tapReward,
                 lastTapTimestamp: window.lastTapTimestamp,
                 taskCompleted: window.taskCompleted,
-                upgrades: window.upgrades, // Updated structure
+                upgrades: window.upgrades, 
                 initialPromptIndex: window.initialPromptIndex, 
                 lastSave: Date.now(),
             };
@@ -204,8 +211,8 @@
 
         function loadGameState() {
             if (!window.isAuthReady || !window.db || !window.userId) {
-                console.log("Using default in-memory state.");
-                document.getElementById('user-id').textContent = 'Persistence Disabled';
+                console.log("Using default in-memory state. Firebase connection likely failed or is loading.");
+                document.getElementById('user-id').textContent = 'Loading...';
                 updateUI();
                 window.displayInitialPrompt(true);
                 return;
