@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Depth Nexus - Idle Miner & Educational Engagement</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* Using a deep, purposeful blue/purple to signify 'Depth' */
+            --depth-color: #7c3aed; /* violet-600 */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0c0c1e; /* Deep dark blue */
+            color: #e5e7eb;
+        }
+        .miner-card {
+            background-color: #1a1b32; /* Slightly lighter deep blue */
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+            border-top: 4px solid var(--depth-color);
+        }
+        .button-primary {
+            transition: all 0.15s ease;
+        }
+        .button-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+        }
+        .button-disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase instances and state
+        window.db = null;
+        window.auth = null;
+        window.userId = null;
+        window.isAuthReady = false;
+
+        // Ensure global access to game functions
+        window.saveGameState = saveGameState;
+        window.loadGameState = loadGameState;
+        window.setupFirebase = setupFirebase;
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        setLogLevel('Debug');
+
+        async function setupFirebase() {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("Firebase configuration is missing.");
+                window.isAuthReady = true;
+                return;
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                window.db = getFirestore(app);
+                window.auth = getAuth(app);
+
+                onAuthStateChanged(window.auth, async (user) => {
+                    if (user) {
+                        window.userId = user.uid;
+                        console.log("Authenticated with user ID:", window.userId);
+                    } else {
+                        await signInAnonymously(window.auth);
+                    }
+                    window.isAuthReady = true;
+                    loadGameState();
+                });
+
+                if (initialAuthToken) {
+                    await signInWithCustomToken(window.auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(window.auth);
+                }
+
+            } catch (error) {
+                console.error("Firebase initialization or authentication failed:", error);
+                window.isAuthReady = true;
+                loadGameState();
+            }
+        }
+
+        function getUserDocRef() {
+            if (!window.db || !window.userId) return null;
+            // Private data storage path: /artifacts/{appId}/users/{userId}/depth_nexus_data/miner_state
+            const path = `artifacts/${appId}/users/${window.userId}/depth_nexus_data`;
+            return doc(window.db, path, 'miner_state');
+        }
+
+        async function saveGameState() {
+            if (!window.isAuthReady || !window.db || !window.userId) return;
+
+            const state = {
+                dnxBalance: window.dnxBalance,
+                hashRate: window.hashRate,
+                dnxEarnedThisWeek: window.dnxEarnedThisWeek,
+                lastSave: Date.now(),
+            };
+            try {
+                await setDoc(getUserDocRef(), state, { merge: true });
+                console.log("Game state saved.");
+            } catch (e) {
+                console.error("Error saving document: ", e);
+            }
+        }
+
+        function loadGameState() {
+            if (!window.isAuthReady || !window.db || !window.userId) {
+                console.log("Using default in-memory state.");
+                document.getElementById('user-id').textContent = 'Persistence Disabled';
+                updateUI();
+                return;
+            }
+
+            const docRef = getUserDocRef();
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    window.dnxBalance = data.dnxBalance || 0;
+                    window.hashRate = data.hashRate || 0.0001;
+                    window.dnxEarnedThisWeek = data.dnxEarnedThisWeek || 0;
+                    
+                    const now = Date.now();
+                    const lastSave = data.lastSave || now;
+                    const timeElapsedHours = (now - lastSave) / (1000 * 60 * 60);
+
+                    const offlineDnx = window.hashRate * timeElapsedHours;
+                    const remainingCap = window.weeklyCap - window.dnxEarnedThisWeek;
+                    
+                    if (offlineDnx > 0) {
+                        const earned = Math.min(offlineDnx, remainingCap);
+                        window.dnxEarnedThisWeek += earned;
+                        if (earned > 0) {
+                            console.log(`Offline mining earned ${earned.toFixed(5)} DNX over ${timeElapsedHours.toFixed(2)} hours.`);
+                            saveGameState(); 
+                        }
+                    }
+
+                    console.log("Game state loaded successfully.");
+                } else {
+                    console.log("No data found, using defaults.");
+                    saveGameState();
+                }
+                updateUI();
+            }, (error) => {
+                console.error("Error listening to document:", error);
+                updateUI();
+            });
+
+            document.getElementById('user-id').textContent = window.userId;
+        }
+
+    </script>
+
+</head>
+<body class="p-4 sm:p-8 min-h-screen">
+
+    <div id="game-container" class="max-w-4xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl sm:text-5xl font-extrabold text-white">
+                <span style="color:var(--depth-color);">$DEPTH</span> Ecosystem: Depth Nexus
+            </h1>
+            <p class="text-sm mt-2 text-gray-400">
+                Incentivizing Consciousness: Earn **$DNX** through Engagement.
+            </p>
+            <p id="user-info" class="text-sm mt-2 text-gray-600">
+                User ID: <span id="user-id" class="text-xs text-gray-700">Loading...</span>
+            </p>
+        </header>
+
+        <!-- Main Stats & Balance -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="miner-card p-4 rounded-xl">
+                <p class="text-sm font-medium text-gray-400">Your $DNX Balance</p>
+                <p id="dnx-balance" class="text-3xl font-bold text-white mt-1">0.0000</p>
+            </div>
+            <div class="miner-card p-4 rounded-xl">
+                <p class="text-sm font-medium text-gray-400">Consciousness Rate (DNX/Hr)</p>
+                <p id="hash-rate" class="text-3xl font-bold text-white mt-1">0.0000</p>
+            </div>
+            <div class="miner-card p-4 rounded-xl">
+                <p class="text-sm font-medium text-gray-400">Weekly $DNX Cap</p>
+                <p class="text-3xl font-bold text-white mt-1 text-green-400">2.0000</p>
+            </div>
+        </div>
+
+        <!-- Mining and Educational Claim Section -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <!-- 1. Idle Mining Progress (The Daily Seed) -->
+            <div class="miner-card p-6 rounded-xl">
+                <h2 class="text-2xl font-semibold mb-4 text-white">Daily Depth Seed</h2>
+                <p class="text-sm text-gray-400 mb-4">Your passive rate plants the seed. View today's insight to claim your $DNX.</p>
+                
+                <div class="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
+                    <p class="text-gray-300 font-semibold">Earned This Week (Ready to Claim)</p>
+                    <p id="dnx-earned" class="text-xl font-extrabold text-teal-400">0.0000 $DNX</p>
+                </div>
+                
+                <div id="mining-status" class="text-sm text-center py-2 mb-4 text-yellow-300 rounded-lg">Mining Active</div>
+                
+                <div class="flex space-x-4">
+                    <button id="claim-button"
+                        onclick="claimDnx()"
+                        class="flex-1 px-6 py-3 rounded-xl bg-violet-600 text-white font-bold button-primary disabled:opacity-50 disabled:cursor-not-allowed hover:bg-violet-700">
+                        View Today's Insight (Earn $DNX)
+                    </button>
+                    <button id="manual-mine-button"
+                        onclick="manualMine()"
+                        class="px-4 py-3 rounded-xl bg-gray-700 text-white font-bold button-primary hover:bg-gray-600 text-sm">
+                        Focus Boost (Tap)
+                    </button>
+                </div>
+                <p id="claim-message" class="text-xs text-center mt-2 h-4 text-red-400"></p>
+                
+            </div>
+
+            <!-- 2. Hash Rate Upgrades -->
+            <div class="miner-card p-6 rounded-xl">
+                <h2 class="text-2xl font-semibold mb-4 text-white">Cultivate Awareness</h2>
+                <p class="text-sm text-gray-400 mb-4">Invest your $DNX to increase your passive Consciousness Rate.</p>
+
+                <div id="upgrades">
+                    <!-- Upgrade 1 -->
+                    <div class="flex justify-between items-center bg-gray-800 p-3 rounded-lg mb-3">
+                        <div>
+                            <p class="text-lg font-semibold">Micro-Focus Module</p>
+                            <p class="text-xs text-gray-400">Increase rate by +0.0005 DNX/Hr</p>
+                        </div>
+                        <button onclick="buyUpgrade(0.5, 0.0005)"
+                            class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-green-700">
+                            Cost: 0.5 $DNX
+                        </button>
+                    </div>
+
+                    <!-- Upgrade 2 -->
+                    <div class="flex justify-between items-center bg-gray-800 p-3 rounded-lg mb-3">
+                        <div>
+                            <p class="text-lg font-semibold">Systemic Clarity Upgrade</p>
+                            <p class="text-xs text-gray-400">Increase rate by +0.0050 DNX/Hr</p>
+                        </div>
+                        <button onclick="buyUpgrade(5.0, 0.0050)"
+                            class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-green-700">
+                            Cost: 5.0 $DNX
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Referral Monetization Simulation (Ecosystem Synergy) -->
+        <div class="miner-card p-6 rounded-xl">
+            <h2 class="text-2xl font-semibold mb-4 text-white">Ecosystem Synergy Tasks</h2>
+            <p class="text-sm text-gray-400 mb-4">Complete one-time onboarding tasks for the main $DEPTH project to earn bonus $DNX, cementing your connection to the core network.</p>
+            
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="task-list">
+                <!-- Task 1: Wallet Sign-Up -->
+                <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
+                    <div>
+                        <p class="font-semibold text-white">Install $DEPTH Wallet</p>
+                        <p class="text-xs text-gray-400">Secure your entry point to the conscious economy.</p>
+                    </div>
+                    <button id="task-1" onclick="completeTask(0.1, 1)"
+                        class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
+                        Earn 0.1 $DNX
+                    </button>
+                </div>
+                <!-- Task 2: KYC/Verification -->
+                <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
+                    <div>
+                        <p class="font-semibold text-white">Verify Digital Identity</p>
+                        <p class="text-xs text-gray-400">Align your identity with the $DEPTH platform.</p>
+                    </div>
+                    <button id="task-2" onclick="completeTask(0.2, 2)"
+                        class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
+                        Earn 0.2 $DNX
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+    </div>
+
+    <script type="module">
+        // Global Game State (will be overridden by Firestore when ready)
+        window.weeklyCap = 2.0;
+        window.dnxBalance = 0.0;
+        window.hashRate = 0.0001; // DNX per hour
+        window.dnxEarnedThisWeek = 0.0;
+        window.taskCompleted = { 1: false, 2: false };
+
+        let gameLoopInterval;
+        const saveInterval = 30000; // Save every 30 seconds
+
+        // --- Core Game Logic ---
+
+        function updateUI() {
+            document.getElementById('dnx-balance').textContent = window.dnxBalance.toFixed(4);
+            document.getElementById('hash-rate').textContent = window.hashRate.toFixed(4);
+            document.getElementById('dnx-earned').textContent = window.dnxEarnedThisWeek.toFixed(4) + ' $DNX';
+
+            const claimButton = document.getElementById('claim-button');
+            
+            // Check if claim is possible
+            const canClaim = window.dnxEarnedThisWeek > 0.00005;
+            claimButton.disabled = !canClaim;
+            claimButton.classList.toggle('button-disabled', !canClaim);
+
+            // Update tasks UI
+            document.getElementById('task-1').disabled = window.taskCompleted[1];
+            document.getElementById('task-2').disabled = window.taskCompleted[2];
+            document.getElementById('task-1').classList.toggle('button-disabled', window.taskCompleted[1]);
+            document.getElementById('task-2').classList.toggle('button-disabled', window.taskCompleted[2]);
+
+            if (window.dnxEarnedThisWeek >= window.weeklyCap) {
+                document.getElementById('mining-status').textContent = 'Weekly Cap Reached. View Insight to claim & reset.';
+                document.getElementById('mining-status').classList.remove('text-yellow-300');
+                document.getElementById('mining-status').classList.add('text-red-500');
+            } else {
+                document.getElementById('mining-status').textContent = 'Consciousness Rate Active';
+                document.getElementById('mining-status').classList.remove('text-red-500');
+                document.getElementById('mining-status').classList.add('text-yellow-300');
+            }
+        }
+
+        function startMiningLoop() {
+            if (gameLoopInterval) clearInterval(gameLoopInterval);
+
+            // 1 second tick
+            gameLoopInterval = setInterval(() => {
+                // Calculate DNX earned per second (Hash Rate / 3600 seconds)
+                const dnxPerSecond = window.hashRate / 3600;
+
+                if (window.dnxEarnedThisWeek < window.weeklyCap) {
+                    window.dnxEarnedThisWeek += dnxPerSecond;
+                    
+                    if (window.dnxEarnedThisWeek > window.weeklyCap) {
+                        window.dnxEarnedThisWeek = window.weeklyCap;
+                    }
+                }
+                updateUI();
+            }, 1000);
+        }
+
+        // Simulates the educational snippet/news engagement
+        window.claimDnx = async function() {
+            const amountToClaim = window.dnxEarnedThisWeek;
+            if (amountToClaim <= 0) {
+                document.getElementById('claim-message').textContent = "Nothing earned yet. Let your focus build!";
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 2000);
+                return;
+            }
+
+            // Simulate reading/watching the Insight (5 seconds for impact)
+            const claimButton = document.getElementById('claim-button');
+            const originalText = claimButton.textContent;
+            
+            claimButton.disabled = true;
+            claimButton.textContent = 'Engaging with Insight (5s) - Cultivating Depth...';
+            document.getElementById('manual-mine-button').disabled = true;
+
+            await new Promise(resolve => setTimeout(resolve, 5000)); // 5 second engagement delay
+
+            // Re-enable interactions
+            claimButton.textContent = originalText;
+            document.getElementById('manual-mine-button').disabled = false;
+
+            // Perform the transaction
+            window.dnxBalance += amountToClaim;
+            window.dnxEarnedThisWeek = 0; // Reset the weekly pool
+
+            document.getElementById('claim-message').textContent = `SUCCESS: Claimed ${amountToClaim.toFixed(4)} $DNX! Weekly pool reset.`;
+            setTimeout(() => document.getElementById('claim-message').textContent = '', 3000);
+
+            saveGameState(); // Save the new balance
+            updateUI();
+        }
+
+        // Simulates the manual tap-to-earn focus boost
+        window.manualMine = function() {
+            const boostAmount = 0.0001;
+            if (window.dnxEarnedThisWeek < window.weeklyCap) {
+                window.dnxEarnedThisWeek += boostAmount;
+                if (window.dnxEarnedThisWeek > window.weeklyCap) {
+                    window.dnxEarnedThisWeek = window.weeklyCap;
+                }
+                document.getElementById('claim-message').textContent = `Focus Boost: +${boostAmount.toFixed(4)} $DNX`;
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 1000);
+                updateUI();
+                saveGameState();
+            } else {
+                document.getElementById('claim-message').textContent = `Cannot boost, weekly cap reached!`;
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 2000);
+            }
+        }
+
+        // Simulates buying upgrades
+        window.buyUpgrade = function(cost, rateIncrease) {
+            if (window.dnxBalance >= cost) {
+                window.dnxBalance -= cost;
+                window.hashRate += rateIncrease;
+                document.getElementById('claim-message').textContent = `Awareness Cultivated! Rate is now ${window.hashRate.toFixed(4)} DNX/Hr.`;
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 3000);
+                updateUI();
+                saveGameState();
+            } else {
+                document.getElementById('claim-message').textCo
