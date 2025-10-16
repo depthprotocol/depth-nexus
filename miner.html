@@ -71,6 +71,9 @@
         window.completeTask = completeTask;
         window.openLedgerModal = openLedgerModal; 
         window.closeLedgerModal = closeLedgerModal; 
+        window.openTaskModal = openTaskModal; 
+        window.closeTaskModal = closeTaskModal; 
+        window.displayRandomPrompt = displayRandomPrompt; // Exposed for button click
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -150,7 +153,7 @@
             }
         }
 
-        async function saveJournalEntry(text, wasMinted, reward) {
+        async function saveJournalEntry(text, wasMinted, reward, promptText) {
             const collectionRef = getJournalCollectionRef();
             if (!collectionRef) {
                 console.error("Cannot save journal: Firebase not ready.");
@@ -162,6 +165,7 @@
                     text: text,
                     wasMinted: wasMinted,
                     dnxReward: reward,
+                    prompt: promptText, // Save the prompt that was used
                     userId: window.userId
                 });
                 console.log("Journal entry saved to Firestore (Collection).");
@@ -273,8 +277,14 @@
                 
                 <div id="mining-status" class="cooldown-text text-center py-2 mb-4 text-yellow-300 rounded-lg">Checking Mint Eligibility...</div>
                 
-                <!-- Journal Prompt and Input -->
-                <p class="text-white font-medium mb-2 text-sm">Today's Prompt: <span class="text-violet-400 italic">"What is one concept or idea that challenged your perspective today, and how did you process it?"</span></p>
+                <!-- Dynamic Journal Prompt and Refresh Button -->
+                <div class="flex justify-between items-center mb-2">
+                    <p class="text-white font-medium text-sm">Today's Prompt:</p>
+                    <button onclick="displayRandomPrompt()" class="text-xs text-violet-400 hover:text-violet-300 font-bold border border-violet-400 px-2 py-1 rounded-full transition duration-150">
+                        Refresh
+                    </button>
+                </div>
+                <p id="current-journal-prompt" class="text-violet-400 italic mb-4 text-base">Loading prompt...</p>
                 
                 <textarea id="journal-input" rows="5" placeholder="Write your reflective entry here... (Min 50 characters)"
                     class="w-full p-3 mb-4 rounded-lg bg-gray-800 border border-gray-700 text-white focus:ring-violet-500 focus:border-violet-500"></textarea>
@@ -336,24 +346,24 @@
             <p class="text-sm text-gray-400 mb-4">Complete one-time onboarding tasks for the main $DEPTH$ project to earn bonus $DNX$, cementing your connection to the core network.</p>
             
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="task-list">
-                <!-- Task 1: Wallet Sign-Up -->
+                <!-- Task 1: Wallet Sign-Up (Now Opens Modal) -->
                 <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
                     <div>
                         <p class="font-semibold text-white">Install $DEPTH$ Wallet</p>
                         <p class="text-xs text-gray-400">Secure your entry point to the conscious economy.</p>
                     </div>
-                    <button id="task-1" onclick="completeTask(0.1, 1)"
+                    <button id="task-1" onclick="openTaskModal(1)"
                         class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
                         Earn 0.1 $DNX$
                     </button>
                 </div>
-                <!-- Task 2: KYC/Verification -->
+                <!-- Task 2: KYC/Verification (Now Opens Modal) -->
                 <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
                     <div>
                         <p class="font-semibold text-white">Verify Digital Identity</p>
                         <p class="text-xs text-gray-400">Align your identity with the $DEPTH$ platform.</p>
                     </div>
-                    <button id="task-2" onclick="completeTask(0.2, 2)"
+                    <button id="task-2" onclick="openTaskModal(2)"
                         class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
                         Earn 0.2 $DNX$
                     </button>
@@ -379,6 +389,31 @@
         </div>
     </div>
 
+    <!-- Task Confirmation Modal (New) -->
+    <div id="task-modal" class="modal fixed inset-0 hidden items-center justify-center p-4" onclick="closeTaskModal(event)">
+        <div class="modal-content w-full max-w-lg rounded-xl p-6 overflow-y-auto" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center border-b border-gray-700 pb-3 mb-4">
+                <h2 id="task-modal-title" class="text-2xl font-bold text-white"></h2>
+                <button onclick="closeTaskModal()" class="text-gray-400 hover:text-white text-3xl leading-none">&times;</button>
+            </div>
+            
+            <div id="task-modal-content" class="text-gray-300 space-y-4">
+                <!-- Content will be injected here -->
+            </div>
+
+            <div class="mt-6 flex justify-end">
+                <button id="task-confirm-button"
+                    class="px-6 py-3 rounded-xl bg-violet-600 text-white font-bold button-primary hover:bg-violet-700 mr-3">
+                    Accept Commitment
+                </button>
+                <button onclick="closeTaskModal()"
+                    class="px-6 py-3 rounded-xl bg-gray-700 text-white font-bold button-primary hover:bg-gray-600">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
 
     <script type="module">
         // Global Game State (will be overridden by Firestore when ready)
@@ -386,15 +421,35 @@
         window.tapReward = 0.05; // Initial reward per entry
         window.lastTapTimestamp = 0; 
         window.taskCompleted = { 1: false, 2: false };
+        window.currentPrompt = ""; // Stores the prompt text currently displayed
 
         // Constants
         const MINT_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
         const MIN_CHARACTERS = 50;
+        
+        // --- NEW: Refreshable Prompts List ---
+        const JOURNAL_PROMPTS = [
+            "Identify a 'shadow' or disowned part of yourself that was triggered today. What message was it trying to deliver? (Mirror Protocol)",
+            "If you were the future version of yourself, what small, high-leverage action would you advise your current self to take right now? (Fractal Kernel)",
+            "Where did you feel a sense of genuine connection or depth today, and what made that interaction different? (L$D Framework)",
+            "Describe one moment where you successfully operated from your 'Observer Node' (awareness without judgment). What did you notice?",
+            "What current life challenge can you re-frame as a necessary chapter in your 'Hero’s Journey'? (Mythmaker Engine)"
+        ];
 
         let uiUpdateInterval;
         const saveInterval = 30000; // Save every 30 seconds
 
         // --- Core Game Logic ---
+
+        // Function to select and display a random prompt
+        window.displayRandomPrompt = function() {
+            const promptElement = document.getElementById('current-journal-prompt');
+            if (promptElement) {
+                const randomIndex = Math.floor(Math.random() * JOURNAL_PROMPTS.length);
+                window.currentPrompt = JOURNAL_PROMPTS[randomIndex];
+                promptElement.textContent = window.currentPrompt;
+            }
+        }
 
         function formatTimeRemaining(ms) {
             if (ms <= 0) return "0h 0m 0s";
@@ -488,7 +543,7 @@
             }
             
             // Save the journal entry to the history collection (always happens)
-            await saveJournalEntry(journalText, didMint, reward);
+            await saveJournalEntry(journalText, didMint, reward, window.currentPrompt); // Pass the current prompt
 
             // Clear the input and restore the button
             journalInput.value = '';
@@ -504,6 +559,7 @@
 
             saveGameState(); // Save the new state
             updateUI();
+            displayRandomPrompt(); // Get a new prompt immediately after submission
         }
 
         // Simulates buying upgrades
@@ -533,6 +589,104 @@
             
             updateUI();
             saveGameState();
+        }
+
+        // --- Task Modal Logic ---
+
+        // Task content map for conceptual clarity
+        const TASK_CONTENT = {
+            1: {
+                title: "Initiate: The Depth Operating System",
+                reward: 0.1,
+                confirmText: 'Accept OS & Earn',
+                html: `
+                    <p class="text-xl font-semibold text-violet-300 mb-4">
+                        You don’t download this OS; you choose it daily.
+                    </p>
+                    <p class="mb-2">Begin by asking yourself, in this moment:</p>
+                    <ul class="list-disc list-inside space-y-2 ml-4">
+                        <li>
+                            <span class="font-medium text-white">Do I accept that I can change how I see my life?</span> 
+                            <span class="text-green-400 font-bold">[Y / N]</span>
+                        </li>
+                        <li>
+                            <span class="font-medium text-white">Am I willing to gently question my own thoughts?</span> 
+                            <span class="text-green-400 font-bold">[Y / N]</span>
+                        </li>
+                        <li>
+                            <span class="font-medium text-white">Will I prioritize genuine connection over superficial scrolling?</span> 
+                            <span class="text-green-400 font-bold">[Y / N]</span>
+                        </li>
+                    </ul>
+                    <p class="mt-4 text-sm text-gray-400 border-t border-gray-700 pt-3">
+                        If you answered yes to even one—congratulations. You’re already running the new OS. Click the button below to cement this commitment and claim your $DNX$.
+                    </p>
+                `
+            },
+            2: {
+                title: "Verify: The Digital Integrity Protocol",
+                reward: 0.2,
+                confirmText: 'Accept Integrity & Earn',
+                html: `
+                    <p class="text-xl font-semibold text-violet-300 mb-4">
+                        Verification is Integrity. Close the Gap between Public and Private Self.
+                    </p>
+                    <p class="mb-2">To verify your Digital Identity (Integrity Protocol), answer these:</p>
+                    <ul class="list-disc list-inside space-y-2 ml-4">
+                        <li>
+                            <span class="font-medium text-white">Am I willing to integrate my "shadow"—the parts of myself I reject or hide (Mirror Protocol)?</span> 
+                            <span class="text-green-400 font-bold">[Y / N]</span>
+                        </li>
+                        <li>
+                            <span class="font-medium text-white">Do I actively choose my life's narrative (Mythmaker), or default to a passive script?</span> 
+                            <span class="text-green-400 font-bold">[Y / N]</span>
+                        </li>
+                        <li>
+                            <span class="font-medium text-white">Will I allow my choices to be guided by my highest values, not just immediate comfort (L$D Framework)?</span> 
+                            <span class="text-green-400 font-bold">[Y / N]</span>
+                        </li>
+                    </ul>
+                    <p class="mt-4 text-sm text-gray-400 border-t border-gray-700 pt-3">
+                        Answering yes verifies your commitment to wholeness. Click the button below to lock in this deeper commitment and claim your $DNX$.
+                    </p>
+                `
+            }
+        };
+
+
+        window.openTaskModal = function(taskId) {
+            const modal = document.getElementById('task-modal');
+            const title = document.getElementById('task-modal-title');
+            const content = document.getElementById('task-modal-content');
+            const confirmButton = document.getElementById('task-confirm-button');
+            const taskData = TASK_CONTENT[taskId];
+
+            // Only open if task exists and hasn't been completed
+            if (!taskData || window.taskCompleted[taskId]) return;
+            
+            // Set content
+            title.textContent = taskData.title;
+            content.innerHTML = taskData.html;
+            
+            // Update button text and set click handler dynamically
+            confirmButton.textContent = `${taskData.confirmText} ${taskData.reward.toFixed(1)} $DNX$`;
+            confirmButton.onclick = () => {
+                // Run the task completion logic and then close
+                completeTask(taskData.reward, taskId);
+                closeTaskModal();
+            };
+
+            // Show the modal
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        window.closeTaskModal = function(event) {
+            // Only close if clicked on the modal background itself, not content
+            if (!event || event.currentTarget.id === 'task-modal') {
+                document.getElementById('task-modal').classList.add('hidden');
+                document.getElementById('task-modal').classList.remove('flex');
+            }
         }
 
         // --- Ledger Modal Logic ---
@@ -586,6 +740,9 @@
                     mintStatus = `<span class="text-yellow-400 font-semibold">Saved (No Mint)</span>`;
                 }
 
+                // Get and display the prompt used
+                const promptUsed = entry.prompt ? `<p class="text-xs text-gray-500 mt-1">Prompt: "${entry.prompt}"</p>` : '';
+
                 // Construct the HTML structure for a single entry
                 const entryHtml = `
                     <div class="bg-gray-800 p-4 rounded-lg border-l-4 ${entry.wasMinted ? 'border-green-500' : 'border-yellow-500'}">
@@ -594,6 +751,7 @@
                             ${mintStatus}
                         </div>
                         <p class="text-white text-md italic whitespace-pre-wrap">${textSnippet}</p>
+                        ${promptUsed}
                     </div>
                 `;
                 // Insert the new entry HTML into the container
@@ -615,6 +773,8 @@
         window.onload = function() {
             setupFirebase();
             startUIUpdateLoop();
+            // Initialize the prompt on load
+            displayRandomPrompt(); 
             // Setup regular save interval only after Firebase is initialized
             setInterval(saveGameState, saveInterval);
         };
