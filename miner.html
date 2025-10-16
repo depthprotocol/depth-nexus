@@ -69,8 +69,8 @@
         window.submitJournalEntry = submitJournalEntry;
         window.buyUpgrade = buyUpgrade;
         window.completeTask = completeTask;
-        window.openLedgerModal = openLedgerModal; // New function
-        window.closeLedgerModal = closeLedgerModal; // New function
+        window.openLedgerModal = openLedgerModal; 
+        window.closeLedgerModal = closeLedgerModal; 
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -107,7 +107,8 @@
                         window.userId = null;
                     }
                     window.isAuthReady = true;
-                    loadGameState();
+                    // Only start loading game state once auth is confirmed
+                    loadGameState(); 
                 });
 
             } catch (error) {
@@ -173,7 +174,8 @@
         async function fetchJournalEntries() {
             const collectionRef = getJournalCollectionRef();
             if (!collectionRef) {
-                console.log("Journal collection not available.");
+                // This indicates a missing database or user ID (auth issue)
+                console.error("Journal collection not available. Auth or DB not ready.");
                 return [];
             }
 
@@ -186,6 +188,8 @@
                 querySnapshot.forEach((doc) => {
                     entries.push({ id: doc.id, ...doc.data() });
                 });
+                
+                console.log(`Fetched ${entries.length} journal entries for the ledger.`); // Log the count!
                 return entries;
 
             } catch (e) {
@@ -203,7 +207,8 @@
             }
 
             const docRef = getMinerDocRef();
-            onSnapshot(docRef, (docSnap) => {
+            // Using onSnapshot to ensure real-time updates to balance
+            onSnapshot(docRef, (docSnap) => { 
                 if (docSnap.exists()) {
                     const data = docSnap.data();
                     window.dnxBalance = data.dnxBalance || 0.0;
@@ -213,7 +218,7 @@
                     
                     console.log("Game state loaded successfully.");
                 } else {
-                    console.log("No data found, using defaults.");
+                    console.log("No data found, using defaults and saving initial state.");
                     saveGameState();
                 }
                 updateUI();
@@ -533,27 +538,47 @@
         // --- Ledger Modal Logic ---
 
         window.openLedgerModal = async function() {
-            document.getElementById('ledger-modal').classList.remove('hidden');
-            document.getElementById('ledger-modal').classList.add('flex');
-            document.getElementById('ledger-loading').classList.remove('hidden');
-            document.getElementById('ledger-empty').classList.add('hidden');
-            document.getElementById('ledger-entries-list').innerHTML = '';
-
-            const entries = await fetchJournalEntries();
-
-            document.getElementById('ledger-loading').classList.add('hidden');
-
+            const modal = document.getElementById('ledger-modal');
+            const loading = document.getElementById('ledger-loading');
+            const empty = document.getElementById('ledger-empty');
             const listContainer = document.getElementById('ledger-entries-list');
             
+            // 1. Show the modal and loading indicator
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            loading.classList.remove('hidden');
+            empty.classList.add('hidden');
+            listContainer.innerHTML = ''; // Clear previous entries
+
+            // CRITICAL CHECK: Ensure Firebase is authenticated before attempting to fetch
+            if (!window.isAuthReady || !window.db || !window.userId) {
+                loading.textContent = 'Connection not ready. Please wait a moment for the user session to initialize.';
+                return;
+            }
+            
+            loading.textContent = 'Loading your past entries...';
+
+            // 2. Fetch the data from Firestore
+            const entries = await fetchJournalEntries();
+
+            // 3. Hide loading
+            loading.classList.add('hidden');
+            
             if (entries.length === 0) {
-                document.getElementById('ledger-empty').classList.remove('hidden');
+                empty.classList.remove('hidden');
                 return;
             }
 
+            // 4. Iterate and Render: This loop creates the visible list items
             entries.forEach(entry => {
+                // Prepare display data
                 const date = new Date(entry.timestamp).toLocaleString();
-                const textSnippet = entry.text.substring(0, 150) + (entry.text.length > 150 ? '...' : '');
                 
+                // Show a larger snippet (300 chars) for better context
+                const SNIPPET_LENGTH = 300;
+                const textSnippet = entry.text.substring(0, SNIPPET_LENGTH) + (entry.text.length > SNIPPET_LENGTH ? '...' : '');
+                
+                // Determine styling based on whether the entry earned DNX
                 let mintStatus;
                 if (entry.wasMinted) {
                     mintStatus = `<span class="text-green-400 font-semibold">Minted ${entry.dnxReward.toFixed(4)} $DNX$</span>`;
@@ -561,6 +586,7 @@
                     mintStatus = `<span class="text-yellow-400 font-semibold">Saved (No Mint)</span>`;
                 }
 
+                // Construct the HTML structure for a single entry
                 const entryHtml = `
                     <div class="bg-gray-800 p-4 rounded-lg border-l-4 ${entry.wasMinted ? 'border-green-500' : 'border-yellow-500'}">
                         <div class="flex justify-between items-center mb-2">
@@ -570,6 +596,7 @@
                         <p class="text-white text-md italic whitespace-pre-wrap">${textSnippet}</p>
                     </div>
                 `;
+                // Insert the new entry HTML into the container
                 listContainer.insertAdjacentHTML('beforeend', entryHtml);
             });
         }
