@@ -19,7 +19,7 @@
         }
         .miner-card {
             background-color: #1a1b32; /* Slightly lighter deep blue */
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 4, 0, 0.2);
             border-top: 4px solid var(--depth-color);
         }
         .button-primary {
@@ -47,12 +47,17 @@
             max-height: 90vh; /* Limit modal height */
             background-color: #1a1b32;
         }
+        .upgrade-purchased {
+            background-color: #3f6212; /* Darker green */
+            color: #d9f99d; /* Light green text */
+            opacity: 0.7;
+            cursor: default;
+        }
     </style>
     <!-- Firebase Imports -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        // NOTE: Added query, orderBy, getDocs for fetching the journal history
         import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, query, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -73,7 +78,8 @@
         window.closeLedgerModal = closeLedgerModal; 
         window.openTaskModal = openTaskModal; 
         window.closeTaskModal = closeTaskModal; 
-        window.displayRandomPrompt = displayRandomPrompt; // Exposed for button click
+        window.displayRandomPrompt = displayRandomPrompt; 
+        window.displayInitialPrompt = displayInitialPrompt; 
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -106,7 +112,6 @@
                         window.userId = user.uid;
                         console.log("Authenticated with user ID:", window.userId);
                     } else {
-                        // Should already be signed in anonymously if token failed
                         window.userId = null;
                     }
                     window.isAuthReady = true;
@@ -123,14 +128,12 @@
 
         function getMinerDocRef() {
             if (!window.db || !window.userId) return null;
-            // Private data storage path for miner state
             const path = `artifacts/${appId}/users/${window.userId}/depth_nexus_data`;
             return doc(window.db, path, 'miner_state');
         }
 
         function getJournalCollectionRef() {
             if (!window.db || !window.userId) return null;
-            // Private data storage path for journal entries
             const path = `artifacts/${appId}/users/${window.userId}/journal_entries`;
             return collection(window.db, path);
         }
@@ -143,6 +146,8 @@
                 tapReward: window.tapReward,
                 lastTapTimestamp: window.lastTapTimestamp,
                 taskCompleted: window.taskCompleted,
+                upgrades: window.upgrades, // Updated structure
+                initialPromptIndex: window.initialPromptIndex, 
                 lastSave: Date.now(),
             };
             try {
@@ -165,7 +170,7 @@
                     text: text,
                     wasMinted: wasMinted,
                     dnxReward: reward,
-                    prompt: promptText, // Save the prompt that was used
+                    prompt: promptText,
                     userId: window.userId
                 });
                 console.log("Journal entry saved to Firestore (Collection).");
@@ -174,17 +179,14 @@
             }
         }
         
-        // New function to fetch journal entries for the ledger
         async function fetchJournalEntries() {
             const collectionRef = getJournalCollectionRef();
             if (!collectionRef) {
-                // This indicates a missing database or user ID (auth issue)
                 console.error("Journal collection not available. Auth or DB not ready.");
                 return [];
             }
 
             try {
-                // Query ordered by timestamp descending (newest first)
                 const q = query(collectionRef, orderBy("timestamp", "desc"));
                 const querySnapshot = await getDocs(q);
                 
@@ -192,8 +194,6 @@
                 querySnapshot.forEach((doc) => {
                     entries.push({ id: doc.id, ...doc.data() });
                 });
-                
-                console.log(`Fetched ${entries.length} journal entries for the ledger.`); // Log the count!
                 return entries;
 
             } catch (e) {
@@ -207,11 +207,11 @@
                 console.log("Using default in-memory state.");
                 document.getElementById('user-id').textContent = 'Persistence Disabled';
                 updateUI();
+                window.displayInitialPrompt(true);
                 return;
             }
 
             const docRef = getMinerDocRef();
-            // Using onSnapshot to ensure real-time updates to balance
             onSnapshot(docRef, (docSnap) => { 
                 if (docSnap.exists()) {
                     const data = docSnap.data();
@@ -220,15 +220,32 @@
                     window.lastTapTimestamp = data.lastTapTimestamp || 0;
                     window.taskCompleted = data.taskCompleted || { 1: false, 2: false };
                     
+                    // Load new upgrade status (nested object with defaults)
+                    window.upgrades = data.upgrades || { 
+                        cepTier: 0, 
+                        clarityPurchased: false 
+                    }; 
+
+                    window.initialPromptIndex = data.initialPromptIndex !== undefined ? data.initialPromptIndex : Math.floor(Math.random() * JOURNAL_PROMPTS.length);
+                    
                     console.log("Game state loaded successfully.");
                 } else {
                     console.log("No data found, using defaults and saving initial state.");
+                    // Initialize prompt index if no data exists
+                    window.initialPromptIndex = Math.floor(Math.random() * JOURNAL_PROMPTS.length);
+                    window.upgrades = { 
+                        cepTier: 0, 
+                        clarityPurchased: false 
+                    }; 
                     saveGameState();
                 }
+                // Update the prompt based on loaded index
+                window.displayInitialPrompt(false); 
                 updateUI();
             }, (error) => {
                 console.error("Error listening to document:", error);
                 updateUI();
+                window.displayInitialPrompt(true);
             });
 
             document.getElementById('user-id').textContent = window.userId;
@@ -259,7 +276,7 @@
                 <p id="dnx-balance" class="text-3xl font-bold text-white mt-1">0.0000</p>
             </div>
             <div class="miner-card p-4 rounded-xl">
-                <p class="text-sm font-medium text-gray-400">Reward Per Mint</p>
+                <p class="text-sm font-medium text-gray-400">Reward Per Mint (Base)</p>
                 <p id="tap-reward" class="text-3xl font-bold text-white mt-1">0.0500</p>
             </div>
             <div class="miner-card p-4 rounded-xl">
@@ -268,25 +285,64 @@
             </div>
         </div>
 
+        <!-- Ecosystem Synergy Tasks (MOVED TO TOP) -->
+        <div class="miner-card p-6 rounded-xl mb-8">
+            <h2 class="text-2xl font-semibold mb-4 text-white">Ecosystem Synergy Tasks (First Steps)</h2>
+            <p class="text-sm text-gray-400 mb-4">Complete these one-time onboarding tasks to **Acquire Initial Capital** and cement your connection to the core network.</p>
+            
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="task-list">
+                <!-- Task 1: Wallet Sign-Up (Now Opens Modal) -->
+                <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
+                    <div>
+                        <p class="font-semibold text-white">Initiate: The Depth Operating System</p>
+                        <p class="text-xs text-gray-400">Secure your entry point to the conscious economy.</p>
+                    </div>
+                    <button id="task-1" onclick="openTaskModal(1)"
+                        class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
+                        Earn 0.1 $DNX$
+                    </button>
+                </div>
+                <!-- Task 2: KYC/Verification (Now Opens Modal) -->
+                <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
+                    <div>
+                        <p class="font-semibold text-white">Verify: The Digital Integrity Protocol</p>
+                        <p class="text-xs text-gray-400">Align your identity with the $DEPTH$ platform.</p>
+                    </div>
+                    <button id="task-2" onclick="openTaskModal(2)"
+                        class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
+                        Earn 0.2 $DNX$
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Mining and Educational Claim Section -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
             <!-- 1. Journal Entry Area -->
             <div class="miner-card p-6 rounded-xl lg:col-span-1">
                 <h2 class="text-2xl font-semibold mb-4 text-white">Daily Conscious Journal</h2>
-                <p class="text-sm text-gray-400 mb-4">Plant your daily seed of self-awareness. Submission requires a minimum of **50 characters**.</p>
+                <p class="text-sm text-gray-400 mb-4">
+                    Plant your daily seed of self-awareness. Submission requires a minimum of 
+                    <strong id="min-chars">50 characters</strong>.
+                </p>
                 
                 <div id="mining-status" class="cooldown-text text-center py-2 mb-4 text-yellow-300 rounded-lg">Checking Mint Eligibility...</div>
                 
-                <!-- Dynamic Journal Prompt and Refresh Button -->
+                <!-- Prompt and Refresh Button -->
                 <div class="flex justify-between items-center mb-2">
                     <p class="text-white font-medium text-sm">Today's Prompt:</p>
-                    <button onclick="displayRandomPrompt()" class="text-xs text-violet-400 hover:text-violet-300 font-bold border border-violet-400 px-2 py-1 rounded-full transition duration-150">
+                    <button id="refresh-button" onclick="displayRandomPrompt(true)" class="text-xs text-violet-400 hover:text-violet-300 font-bold border border-violet-400 px-2 py-1 rounded-full transition duration-150">
                         Refresh
                     </button>
                 </div>
                 <p id="current-journal-prompt" class="text-violet-400 italic mb-4 text-base">Loading prompt...</p>
                 
-                <textarea id="journal-input" rows="5" placeholder="Write your reflective entry here... (Min 50 characters)"
+                <!-- NEW POSITION FOR FOCUS STATUS (Moved above the textarea) -->
+                <div id="focus-status-display" class="p-2 mb-3 rounded-lg text-center font-bold text-sm bg-gray-700">
+                    <!-- Content injected here by JS -->
+                </div>
+
+                <textarea id="journal-input" rows="5" placeholder="Write your reflective entry here..."
                     class="w-full p-3 mb-4 rounded-lg bg-gray-800 border border-gray-700 text-white focus:ring-violet-500 focus:border-violet-500"></textarea>
 
                 <button id="mine-button"
@@ -301,32 +357,37 @@
             <!-- 2. Entry Reward Upgrades and Ledger Button -->
             <div class="miner-card p-6 rounded-xl lg:col-span-1 flex flex-col">
                 <h2 class="text-2xl font-semibold mb-4 text-white">Cultivate Awareness</h2>
-                <p class="text-sm text-gray-400 mb-4">Invest $DNX$ to increase your reward per daily journal entry **when minting is available**.</p>
+                <p class="text-sm text-gray-400 mb-4">Invest $DNX$ to permanently improve your mining protocol.</p>
 
-                <div id="upgrades" class="flex-grow">
-                    <!-- Upgrade 1 -->
-                    <div class="flex justify-between items-center bg-gray-800 p-3 rounded-lg mb-3">
+                <div id="upgrades" class="flex-grow space-y-3">
+                    
+                    <!-- Tiered Upgrade: Conscious Engagement Protocol (CEP) -->
+                    <div id="upgrade-cep" class="bg-gray-800 p-3 rounded-lg border-l-4 border-violet-500">
                         <div>
-                            <p class="text-lg font-semibold">Micro-Focus Module</p>
-                            <p class="text-xs text-gray-400">Increase entry reward by +0.010 $DNX$</p>
+                            <p id="cep-title" class="text-lg font-semibold">Conscious Engagement Protocol (CEP) - Tier 0</p>
+                            <p id="cep-desc" class="text-xs text-gray-400">Unlock the first layer of enhanced rewards.</p>
                         </div>
-                        <button onclick="buyUpgrade(0.5, 0.0100)"
-                            class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-green-700">
-                            Cost: 0.5 $DNX$
+                        <button id="cep-button" 
+                            onclick="buyCepUpgrade()"
+                            class="mt-3 w-full bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-green-700">
+                            Cost: 0.15 $DNX$ (+0.01 $DNX$)
                         </button>
                     </div>
 
-                    <!-- Upgrade 2 -->
-                    <div class="flex justify-between items-center bg-gray-800 p-3 rounded-lg mb-3">
+                    <!-- Utility Upgrade: Systemic Clarity Upgrade -->
+                    <div id="upgrade-clarity" class="flex justify-between items-center bg-gray-800 p-3 rounded-lg">
                         <div>
                             <p class="text-lg font-semibold">Systemic Clarity Upgrade</p>
-                            <p class="text-xs text-gray-400">Increase entry reward by +0.050 $DNX$</p>
+                            <p class="text-xs text-gray-400">
+                                Reduces min required characters from 50 to 30.
+                            </p>
                         </div>
-                        <button onclick="buyUpgrade(5.0, 0.0500)"
+                        <button id="clarity-button" onclick="buyUtilityUpgrade(2.00, 'clarityPurchased')"
                             class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-green-700">
-                            Cost: 5.0 $DNX$
+                            Cost: 2.0 $DNX$
                         </button>
                     </div>
+
                 </div>
 
                 <!-- Private Ledger Button -->
@@ -335,37 +396,6 @@
                         onclick="openLedgerModal()"
                         class="w-full px-6 py-3 rounded-xl bg-gray-700 text-white font-bold button-primary hover:bg-gray-600">
                         View Private Ledger (Growth Tracker)
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Ecosystem Synergy Tasks -->
-        <div class="miner-card p-6 rounded-xl">
-            <h2 class="text-2xl font-semibold mb-4 text-white">Ecosystem Synergy Tasks</h2>
-            <p class="text-sm text-gray-400 mb-4">Complete one-time onboarding tasks for the main $DEPTH$ project to earn bonus $DNX$, cementing your connection to the core network.</p>
-            
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="task-list">
-                <!-- Task 1: Wallet Sign-Up (Now Opens Modal) -->
-                <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
-                    <div>
-                        <p class="font-semibold text-white">Install $DEPTH$ Wallet</p>
-                        <p class="text-xs text-gray-400">Secure your entry point to the conscious economy.</p>
-                    </div>
-                    <button id="task-1" onclick="openTaskModal(1)"
-                        class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
-                        Earn 0.1 $DNX$
-                    </button>
-                </div>
-                <!-- Task 2: KYC/Verification (Now Opens Modal) -->
-                <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
-                    <div>
-                        <p class="font-semibold text-white">Verify Digital Identity</p>
-                        <p class="text-xs text-gray-400">Align your identity with the $DEPTH$ platform.</p>
-                    </div>
-                    <button id="task-2" onclick="openTaskModal(2)"
-                        class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
-                        Earn 0.2 $DNX$
                     </button>
                 </div>
             </div>
@@ -418,16 +448,38 @@
     <script type="module">
         // Global Game State (will be overridden by Firestore when ready)
         window.dnxBalance = 0.0;
-        window.tapReward = 0.05; // Initial reward per entry
+        window.tapReward = 0.05; // Initial base reward per entry
         window.lastTapTimestamp = 0; 
         window.taskCompleted = { 1: false, 2: false };
+        // UPDATED: Upgrades now tracked as a tiered integer and a separate utility flag
+        window.upgrades = { 
+            cepTier: 0, 
+            clarityPurchased: false 
+        }; 
+        window.initialPromptIndex = 0; // Index of the prompt loaded at the start of the cycle
         window.currentPrompt = ""; // Stores the prompt text currently displayed
+        window.isPromptRefreshed = false; // Tracks if the user hit the refresh button
 
         // Constants
         const MINT_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-        const MIN_CHARACTERS = 50;
-        
-        // --- NEW: Refreshable Prompts List ---
+        const BASE_MIN_CHARACTERS = 50;
+        const CLARITY_MIN_CHARACTERS = 30;
+        const FOCUS_MULTIPLIER = 1.2;
+        const BASE_REWARD = 0.05;
+
+        // --- NEW TIERED UPGRADE CONFIGURATION ---
+        const CEP_UPGRADES = [
+            // Tier 0 (Initial state) - Placeholder
+            { name: "Initial Protocol", cost: 0, rewardIncrease: 0, description: "Base mining rate." },
+            // Tier 1
+            { name: "Focus Module (Tier 1)", cost: 0.15, rewardIncrease: 0.010, description: "Unlocks the **1.2x Focus Bonus** (if prompt is not refreshed)." },
+            // Tier 2 (Approx 3x previous cost)
+            { name: "Expansion Matrix (Tier 2)", cost: 0.50, rewardIncrease: 0.030, description: "Permanently boosts your base reward." },
+            // Tier 3 (Approx 3x previous cost)
+            { name: "Mastery Core (Tier 3)", cost: 1.50, rewardIncrease: 0.060, description: "Achieve maximum efficiency for $DNX$ mining." }
+        ];
+
+        // --- Refreshable Prompts List ---
         const JOURNAL_PROMPTS = [
             "Identify a 'shadow' or disowned part of yourself that was triggered today. What message was it trying to deliver? (Mirror Protocol)",
             "If you were the future version of yourself, what small, high-leverage action would you advise your current self to take right now? (Fractal Kernel)",
@@ -441,13 +493,36 @@
 
         // --- Core Game Logic ---
 
-        // Function to select and display a random prompt
-        window.displayRandomPrompt = function() {
+        // Function to set the initial prompt based on the stored index
+        window.displayInitialPrompt = function(isDefault) {
+             const promptElement = document.getElementById('current-journal-prompt');
+             if (promptElement) {
+                // If using default, choose a random one. Otherwise, use the loaded index.
+                let index = isDefault ? Math.floor(Math.random() * JOURNAL_PROMPTS.length) : window.initialPromptIndex;
+                
+                // Ensure index is valid
+                if (index < 0 || index >= JOURNAL_PROMPTS.length) {
+                    index = 0;
+                }
+                
+                window.currentPrompt = JOURNAL_PROMPTS[index];
+                promptElement.textContent = window.currentPrompt;
+                window.isPromptRefreshed = false; // Reset refresh status for a new 24h cycle/load
+            }
+        }
+
+        // Function to select and display a random prompt (used when refresh button is clicked)
+        window.displayRandomPrompt = function(isRefreshClick = false) {
             const promptElement = document.getElementById('current-journal-prompt');
             if (promptElement) {
                 const randomIndex = Math.floor(Math.random() * JOURNAL_PROMPTS.length);
                 window.currentPrompt = JOURNAL_PROMPTS[randomIndex];
                 promptElement.textContent = window.currentPrompt;
+                
+                if (isRefreshClick) {
+                    window.isPromptRefreshed = true; // Mark as refreshed
+                    updateUI(); // Immediately update focus status
+                }
             }
         }
 
@@ -458,8 +533,21 @@
             const seconds = Math.floor((ms % (1000 * 60)) / 1000);
             return `${hours}h ${minutes}m ${seconds}s`;
         }
+        
+        // Calculates the current base tap reward based on upgrades
+        function calculateCurrentBaseReward() {
+            let totalIncrease = 0;
+            for (let i = 1; i <= window.upgrades.cepTier; i++) {
+                // Sums up all the reward increases from unlocked tiers
+                totalIncrease += CEP_UPGRADES[i].rewardIncrease;
+            }
+            return BASE_REWARD + totalIncrease;
+        }
 
         function updateUI() {
+            // Update Base Reward before display
+            window.tapReward = calculateCurrentBaseReward();
+
             document.getElementById('dnx-balance').textContent = window.dnxBalance.toFixed(4);
             document.getElementById('tap-reward').textContent = window.tapReward.toFixed(4);
             
@@ -473,24 +561,107 @@
             
             const isMintReady = timeRemaining === 0;
 
+            // Determine required minimum characters based on Clarity Upgrade
+            const minChars = window.upgrades.clarityPurchased ? CLARITY_MIN_CHARACTERS : BASE_MIN_CHARACTERS;
+            document.getElementById('min-chars').textContent = `${minChars} characters`;
+            
+            // --- FOCUS STATUS DISPLAY LOGIC (NEW POSITION) ---
+            const isFocusEligible = window.upgrades.cepTier >= 1 && !window.isPromptRefreshed;
+            const focusDisplayElement = document.getElementById('focus-status-display');
+
+            if (window.upgrades.cepTier >= 1) {
+                 if (window.isPromptRefreshed) {
+                    focusDisplayElement.innerHTML = "🚫 **Focus Bonus Disabled**: You refreshed the prompt. Mint will proceed at base rate.";
+                    focusDisplayElement.classList.remove('bg-green-700', 'text-green-200', 'bg-violet-800', 'text-violet-200');
+                    focusDisplayElement.classList.add('bg-yellow-800', 'text-yellow-200');
+                } else {
+                    focusDisplayElement.innerHTML = "🎯 **FOCUS BONUS ACTIVE**: Submit entry now for **1.2x $DNX$** reward!";
+                    focusDisplayElement.classList.remove('bg-yellow-800', 'text-yellow-200', 'bg-violet-800', 'text-violet-200');
+                    focusDisplayElement.classList.add('bg-green-700', 'text-green-200');
+                }
+            } else {
+                 focusDisplayElement.innerHTML = "💡 **TIP**: Purchase **Focus Module (Tier 1)** to unlock the **1.2x Focus Bonus**!";
+                 focusDisplayElement.classList.remove('bg-green-700', 'text-green-200', 'bg-yellow-800', 'text-yellow-200');
+                 focusDisplayElement.classList.add('bg-violet-800', 'text-violet-200');
+            }
+
+
             if (isMintReady) {
+                // Calculate potential reward including focus multiplier
+                let totalReward = window.tapReward;
+                let bonusText = "";
+
+                if (isFocusEligible) {
+                    totalReward *= FOCUS_MULTIPLIER;
+                    bonusText = `(x${FOCUS_MULTIPLIER.toFixed(1)} Focus)`;
+                }
+                
                 miningStatus.textContent = "MINT READY: Next entry will earn $DNX$";
                 miningStatus.style.backgroundColor = 'var(--mint-ready)';
                 miningStatus.style.color = '#000';
                 mintRemainingDisplay.textContent = "NOW!";
                 mintRemainingDisplay.style.color = 'var(--mint-ready)';
-                mineButton.textContent = `Submit Journal Entry & MINT ${window.tapReward.toFixed(4)} $DNX$`;
+                mineButton.textContent = `Submit Journal Entry & MINT ${totalReward.toFixed(4)} $DNX$ ${bonusText}`;
             } else {
                 miningStatus.textContent = "Minting is on Cooldown. Entry will only be saved.";
-                miningStatus.style.backgroundColor = '#4b5563'; /* Gray background for cooldown */
+                miningStatus.style.backgroundColor = '#4b5563'; 
                 miningStatus.style.color = '#e5e7eb';
                 mintRemainingDisplay.textContent = formatTimeRemaining(timeRemaining);
-                mintRemainingDisplay.style.color = '#fcd34d'; /* Amber for countdown */
+                mintRemainingDisplay.style.color = '#fcd34d'; 
                 mineButton.textContent = "Submit Journal Entry (No Mint)";
             }
 
             mineButton.disabled = false;
             mineButton.classList.remove('button-disabled');
+
+            // --- Update UPGRADE UI ---
+            const nextTier = window.upgrades.cepTier + 1;
+            const cepDiv = document.getElementById('upgrade-cep');
+            const cepTitle = document.getElementById('cep-title');
+            const cepDesc = document.getElementById('cep-desc');
+            const cepButton = document.getElementById('cep-button');
+
+            if (nextTier <= 3) {
+                const upgrade = CEP_UPGRADES[nextTier];
+                const currentReward = calculateCurrentBaseReward();
+                const newReward = currentReward + upgrade.rewardIncrease;
+                
+                cepTitle.textContent = `${upgrade.name}`;
+                cepDesc.innerHTML = `${upgrade.description} Current Base: ${currentReward.toFixed(4)} $DNX$ &rarr; **New Base: ${newReward.toFixed(4)} $DNX$**.`;
+                cepButton.textContent = `Cost: ${upgrade.cost.toFixed(2)} $DNX$`;
+                cepDiv.classList.remove('upgrade-purchased');
+                cepButton.disabled = false;
+
+                if (window.dnxBalance < upgrade.cost) {
+                    cepButton.disabled = true;
+                    cepButton.classList.add('button-disabled');
+                } else {
+                    cepButton.classList.remove('button-disabled');
+                }
+
+            } else {
+                cepTitle.textContent = `Conscious Engagement Protocol - MAXED`;
+                cepDesc.textContent = `All three tiers activated. Max base reward reached.`;
+                cepButton.textContent = `Purchased`;
+                cepButton.disabled = true;
+                cepDiv.classList.add('upgrade-purchased');
+            }
+
+
+            // Update Utility Upgrade UI
+            const clarityButton = document.getElementById('clarity-button');
+            const clarityDiv = document.getElementById('upgrade-clarity');
+
+            if (window.upgrades.clarityPurchased) {
+                clarityButton.textContent = 'Purchased';
+                clarityButton.disabled = true;
+                clarityDiv.classList.add('upgrade-purchased');
+            } else {
+                clarityDiv.classList.remove('upgrade-purchased');
+                clarityButton.disabled = window.dnxBalance < 2.00;
+                clarityButton.classList.toggle('button-disabled', window.dnxBalance < 2.00);
+            }
+            
 
             // Update tasks UI
             document.getElementById('task-1').disabled = window.taskCompleted[1];
@@ -517,10 +688,12 @@
             const isMintReady = timeSinceLastMint >= MINT_COOLDOWN_MS;
             let didMint = false;
             let reward = 0.0;
+            
+            // Determine required minimum characters based on Clarity Upgrade
+            const minChars = window.upgrades.clarityPurchased ? CLARITY_MIN_CHARACTERS : BASE_MIN_CHARACTERS;
 
-
-            if (journalText.length < MIN_CHARACTERS) {
-                document.getElementById('claim-message').textContent = `Entry is too short (${journalText.length} chars). Minimum ${MIN_CHARACTERS} characters required for reflection.`;
+            if (journalText.length < minChars) {
+                document.getElementById('claim-message').textContent = `Entry is too short (${journalText.length} chars). Minimum ${minChars} characters required for reflection.`;
                 setTimeout(() => document.getElementById('claim-message').textContent = '', 3000);
                 return;
             }
@@ -531,19 +704,30 @@
             mineButton.textContent = 'Securing Insight...';
             document.getElementById('mining-status').textContent = "Processing and Securing Entry...";
 
-            // Simulate the network and processing delay
-            await new Promise(resolve => setTimeout(resolve, 2000)); 
+            await new Promise(resolve => setTimeout(resolve, 1500)); 
 
             if (isMintReady) {
-                // Perform the minting transaction
+                // Reward is based on the current calculated base tapReward
                 reward = window.tapReward;
+                
+                // Apply Micro-Focus Multiplier if applicable (only if Tier 1 or higher)
+                const isFocusEligible = window.upgrades.cepTier >= 1 && !window.isPromptRefreshed;
+                if (isFocusEligible) {
+                    reward *= FOCUS_MULTIPLIER;
+                }
+                
                 window.dnxBalance += reward;
                 window.lastTapTimestamp = now; // Reset the 24-hour clock
                 didMint = true;
+                
+                // Reset the prompt state for the new cycle
+                window.isPromptRefreshed = false;
+                window.initialPromptIndex = Math.floor(Math.random() * JOURNAL_PROMPTS.length); // Pick new initial prompt
+                displayInitialPrompt(false); 
             }
             
-            // Save the journal entry to the history collection (always happens)
-            await saveJournalEntry(journalText, didMint, reward, window.currentPrompt); // Pass the current prompt
+            // Save the journal entry
+            await saveJournalEntry(journalText, didMint, reward, window.currentPrompt); 
 
             // Clear the input and restore the button
             journalInput.value = '';
@@ -559,20 +743,56 @@
 
             saveGameState(); // Save the new state
             updateUI();
-            displayRandomPrompt(); // Get a new prompt immediately after submission
         }
 
-        // Simulates buying upgrades
-        window.buyUpgrade = function(cost, rewardIncrease) {
-            if (window.dnxBalance >= cost) {
-                window.dnxBalance -= cost;
-                window.tapReward += rewardIncrease;
-                document.getElementById('claim-message').textContent = `Awareness Cultivated! Reward is now ${window.tapReward.toFixed(4)} $DNX$ per mint.`;
-                setTimeout(() => document.getElementById('claim-message').textContent = '', 3000);
+        // Handles the purchase of the tiered CEP upgrade
+        window.buyCepUpgrade = function() {
+            const nextTier = window.upgrades.cepTier + 1;
+            if (nextTier > 3) {
+                document.getElementById('claim-message').textContent = "CEP is already at max tier!";
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 2000);
+                return;
+            }
+
+            const upgrade = CEP_UPGRADES[nextTier];
+            
+            if (window.dnxBalance >= upgrade.cost) {
+                window.dnxBalance -= upgrade.cost;
+                window.upgrades.cepTier = nextTier; // Increment the tier
+
+                // Recalculate and update the reward now
+                window.tapReward = calculateCurrentBaseReward();
+
+                document.getElementById('claim-message').textContent = `${upgrade.name} activated! New base reward is ${window.tapReward.toFixed(4)} $DNX$.`;
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 4000);
+                
                 updateUI();
                 saveGameState();
             } else {
-                document.getElementById('claim-message').textContent = "Insufficient $DNX$ balance!";
+                document.getElementById('claim-message').textContent = `Insufficient $DNX$. Need ${upgrade.cost.toFixed(2)} $DNX$ to unlock the next tier.`;
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 2000);
+            }
+        }
+        
+        // Handles the purchase of the utility (non-tiered) Clarity upgrade
+        window.buyUtilityUpgrade = function(cost, upgradeKey) {
+            if (window.upgrades[upgradeKey]) {
+                document.getElementById('claim-message').textContent = "Upgrade already purchased!";
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 2000);
+                return;
+            }
+
+            if (window.dnxBalance >= cost) {
+                window.dnxBalance -= cost;
+                window.upgrades[upgradeKey] = true; // Mark as purchased
+
+                document.getElementById('claim-message').textContent = `Systemic Clarity activated! Min entry length reduced to ${CLARITY_MIN_CHARACTERS}.`;
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 4000);
+                
+                updateUI();
+                saveGameState();
+            } else {
+                document.getElementById('claim-message').textContent = `Insufficient $DNX$ balance! Need ${cost.toFixed(2)} $DNX$.`;
                 setTimeout(() => document.getElementById('claim-message').textContent = '', 2000);
             }
         }
@@ -591,9 +811,8 @@
             saveGameState();
         }
 
-        // --- Task Modal Logic ---
+        // --- Modal Logic (Unchanged from previous version) ---
 
-        // Task content map for conceptual clarity
         const TASK_CONTENT = {
             1: {
                 title: "Initiate: The Depth Operating System",
@@ -661,35 +880,27 @@
             const confirmButton = document.getElementById('task-confirm-button');
             const taskData = TASK_CONTENT[taskId];
 
-            // Only open if task exists and hasn't been completed
             if (!taskData || window.taskCompleted[taskId]) return;
             
-            // Set content
             title.textContent = taskData.title;
             content.innerHTML = taskData.html;
             
-            // Update button text and set click handler dynamically
             confirmButton.textContent = `${taskData.confirmText} ${taskData.reward.toFixed(1)} $DNX$`;
             confirmButton.onclick = () => {
-                // Run the task completion logic and then close
                 completeTask(taskData.reward, taskId);
                 closeTaskModal();
             };
 
-            // Show the modal
             modal.classList.remove('hidden');
             modal.classList.add('flex');
         }
 
         window.closeTaskModal = function(event) {
-            // Only close if clicked on the modal background itself, not content
             if (!event || event.currentTarget.id === 'task-modal') {
                 document.getElementById('task-modal').classList.add('hidden');
                 document.getElementById('task-modal').classList.remove('flex');
             }
         }
-
-        // --- Ledger Modal Logic ---
 
         window.openLedgerModal = async function() {
             const modal = document.getElementById('ledger-modal');
@@ -697,14 +908,12 @@
             const empty = document.getElementById('ledger-empty');
             const listContainer = document.getElementById('ledger-entries-list');
             
-            // 1. Show the modal and loading indicator
             modal.classList.remove('hidden');
             modal.classList.add('flex');
             loading.classList.remove('hidden');
             empty.classList.add('hidden');
-            listContainer.innerHTML = ''; // Clear previous entries
+            listContainer.innerHTML = ''; 
 
-            // CRITICAL CHECK: Ensure Firebase is authenticated before attempting to fetch
             if (!window.isAuthReady || !window.db || !window.userId) {
                 loading.textContent = 'Connection not ready. Please wait a moment for the user session to initialize.';
                 return;
@@ -712,10 +921,8 @@
             
             loading.textContent = 'Loading your past entries...';
 
-            // 2. Fetch the data from Firestore
             const entries = await fetchJournalEntries();
 
-            // 3. Hide loading
             loading.classList.add('hidden');
             
             if (entries.length === 0) {
@@ -723,16 +930,11 @@
                 return;
             }
 
-            // 4. Iterate and Render: This loop creates the visible list items
             entries.forEach(entry => {
-                // Prepare display data
                 const date = new Date(entry.timestamp).toLocaleString();
-                
-                // Show a larger snippet (300 chars) for better context
                 const SNIPPET_LENGTH = 300;
                 const textSnippet = entry.text.substring(0, SNIPPET_LENGTH) + (entry.text.length > SNIPPET_LENGTH ? '...' : '');
                 
-                // Determine styling based on whether the entry earned DNX
                 let mintStatus;
                 if (entry.wasMinted) {
                     mintStatus = `<span class="text-green-400 font-semibold">Minted ${entry.dnxReward.toFixed(4)} $DNX$</span>`;
@@ -740,10 +942,8 @@
                     mintStatus = `<span class="text-yellow-400 font-semibold">Saved (No Mint)</span>`;
                 }
 
-                // Get and display the prompt used
                 const promptUsed = entry.prompt ? `<p class="text-xs text-gray-500 mt-1">Prompt: "${entry.prompt}"</p>` : '';
 
-                // Construct the HTML structure for a single entry
                 const entryHtml = `
                     <div class="bg-gray-800 p-4 rounded-lg border-l-4 ${entry.wasMinted ? 'border-green-500' : 'border-yellow-500'}">
                         <div class="flex justify-between items-center mb-2">
@@ -754,13 +954,11 @@
                         ${promptUsed}
                     </div>
                 `;
-                // Insert the new entry HTML into the container
                 listContainer.insertAdjacentHTML('beforeend', entryHtml);
             });
         }
 
         window.closeLedgerModal = function(event) {
-            // Only close if clicked on the modal background itself, not content
             if (!event || event.currentTarget.id === 'ledger-modal') {
                 document.getElementById('ledger-modal').classList.add('hidden');
                 document.getElementById('ledger-modal').classList.remove('flex');
@@ -773,9 +971,6 @@
         window.onload = function() {
             setupFirebase();
             startUIUpdateLoop();
-            // Initialize the prompt on load
-            displayRandomPrompt(); 
-            // Setup regular save interval only after Firebase is initialized
             setInterval(saveGameState, saveInterval);
         };
 
