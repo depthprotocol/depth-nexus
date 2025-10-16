@@ -3,13 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Depth Nexus - Idle Miner & Educational Engagement</title>
+    <title>Depth Nexus - Journal Miner & Conscious Engagement</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
         :root {
             /* Using a deep, purposeful blue/purple to signify 'Depth' */
             --depth-color: #7c3aed; /* violet-600 */
+            --mint-ready: #10b981; /* emerald-500 */
         }
         body {
             font-family: 'Inter', sans-serif;
@@ -32,12 +33,27 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
+        .cooldown-text {
+            min-height: 20px; /* Ensure space is reserved */
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+        /* Modal Styles */
+        .modal {
+            background-color: rgba(0, 0, 0, 0.8);
+            z-index: 50;
+        }
+        .modal-content {
+            max-height: 90vh; /* Limit modal height */
+            background-color: #1a1b32;
+        }
     </style>
     <!-- Firebase Imports -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // NOTE: Added query, orderBy, getDocs for fetching the journal history
+        import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, query, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Global Firebase instances and state
@@ -50,6 +66,11 @@
         window.saveGameState = saveGameState;
         window.loadGameState = loadGameState;
         window.setupFirebase = setupFirebase;
+        window.submitJournalEntry = submitJournalEntry;
+        window.buyUpgrade = buyUpgrade;
+        window.completeTask = completeTask;
+        window.openLedgerModal = openLedgerModal; // New function
+        window.closeLedgerModal = closeLedgerModal; // New function
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -70,22 +91,24 @@
                 window.db = getFirestore(app);
                 window.auth = getAuth(app);
 
-                onAuthStateChanged(window.auth, async (user) => {
-                    if (user) {
-                        window.userId = user.uid;
-                        console.log("Authenticated with user ID:", window.userId);
-                    } else {
-                        await signInAnonymously(window.auth);
-                    }
-                    window.isAuthReady = true;
-                    loadGameState();
-                });
-
+                // Initial sign-in attempt
                 if (initialAuthToken) {
                     await signInWithCustomToken(window.auth, initialAuthToken);
                 } else {
                     await signInAnonymously(window.auth);
                 }
+
+                onAuthStateChanged(window.auth, (user) => {
+                    if (user) {
+                        window.userId = user.uid;
+                        console.log("Authenticated with user ID:", window.userId);
+                    } else {
+                        // Should already be signed in anonymously if token failed
+                        window.userId = null;
+                    }
+                    window.isAuthReady = true;
+                    loadGameState();
+                });
 
             } catch (error) {
                 console.error("Firebase initialization or authentication failed:", error);
@@ -94,11 +117,18 @@
             }
         }
 
-        function getUserDocRef() {
+        function getMinerDocRef() {
             if (!window.db || !window.userId) return null;
-            // Private data storage path: /artifacts/{appId}/users/{userId}/depth_nexus_data/miner_state
+            // Private data storage path for miner state
             const path = `artifacts/${appId}/users/${window.userId}/depth_nexus_data`;
             return doc(window.db, path, 'miner_state');
+        }
+
+        function getJournalCollectionRef() {
+            if (!window.db || !window.userId) return null;
+            // Private data storage path for journal entries
+            const path = `artifacts/${appId}/users/${window.userId}/journal_entries`;
+            return collection(window.db, path);
         }
 
         async function saveGameState() {
@@ -106,15 +136,61 @@
 
             const state = {
                 dnxBalance: window.dnxBalance,
-                hashRate: window.hashRate,
-                dnxEarnedThisWeek: window.dnxEarnedThisWeek,
+                tapReward: window.tapReward,
+                lastTapTimestamp: window.lastTapTimestamp,
+                taskCompleted: window.taskCompleted,
                 lastSave: Date.now(),
             };
             try {
-                await setDoc(getUserDocRef(), state, { merge: true });
-                console.log("Game state saved.");
+                await setDoc(getMinerDocRef(), state, { merge: true });
+                console.log("Miner state saved.");
             } catch (e) {
-                console.error("Error saving document: ", e);
+                console.error("Error saving miner state: ", e);
+            }
+        }
+
+        async function saveJournalEntry(text, wasMinted, reward) {
+            const collectionRef = getJournalCollectionRef();
+            if (!collectionRef) {
+                console.error("Cannot save journal: Firebase not ready.");
+                return;
+            }
+            try {
+                await addDoc(collectionRef, {
+                    timestamp: Date.now(),
+                    text: text,
+                    wasMinted: wasMinted,
+                    dnxReward: reward,
+                    userId: window.userId
+                });
+                console.log("Journal entry saved to Firestore (Collection).");
+            } catch (e) {
+                console.error("Error saving journal entry: ", e);
+            }
+        }
+        
+        // New function to fetch journal entries for the ledger
+        async function fetchJournalEntries() {
+            const collectionRef = getJournalCollectionRef();
+            if (!collectionRef) {
+                console.log("Journal collection not available.");
+                return [];
+            }
+
+            try {
+                // Query ordered by timestamp descending (newest first)
+                const q = query(collectionRef, orderBy("timestamp", "desc"));
+                const querySnapshot = await getDocs(q);
+                
+                const entries = [];
+                querySnapshot.forEach((doc) => {
+                    entries.push({ id: doc.id, ...doc.data() });
+                });
+                return entries;
+
+            } catch (e) {
+                console.error("Error fetching journal entries:", e);
+                return [];
             }
         }
 
@@ -126,30 +202,15 @@
                 return;
             }
 
-            const docRef = getUserDocRef();
+            const docRef = getMinerDocRef();
             onSnapshot(docRef, (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
-                    window.dnxBalance = data.dnxBalance || 0;
-                    window.hashRate = data.hashRate || 0.0001;
-                    window.dnxEarnedThisWeek = data.dnxEarnedThisWeek || 0;
+                    window.dnxBalance = data.dnxBalance || 0.0;
+                    window.tapReward = data.tapReward || 0.05;
+                    window.lastTapTimestamp = data.lastTapTimestamp || 0;
+                    window.taskCompleted = data.taskCompleted || { 1: false, 2: false };
                     
-                    const now = Date.now();
-                    const lastSave = data.lastSave || now;
-                    const timeElapsedHours = (now - lastSave) / (1000 * 60 * 60);
-
-                    const offlineDnx = window.hashRate * timeElapsedHours;
-                    const remainingCap = window.weeklyCap - window.dnxEarnedThisWeek;
-                    
-                    if (offlineDnx > 0) {
-                        const earned = Math.min(offlineDnx, remainingCap);
-                        window.dnxEarnedThisWeek += earned;
-                        if (earned > 0) {
-                            console.log(`Offline mining earned ${earned.toFixed(5)} DNX over ${timeElapsedHours.toFixed(2)} hours.`);
-                            saveGameState(); 
-                        }
-                    }
-
                     console.log("Game state loaded successfully.");
                 } else {
                     console.log("No data found, using defaults.");
@@ -175,7 +236,7 @@
                 <span style="color:var(--depth-color);">$DEPTH</span> Ecosystem: Depth Nexus
             </h1>
             <p class="text-sm mt-2 text-gray-400">
-                Incentivizing Consciousness: Earn **$DNX** through Engagement.
+                Incentivizing Consciousness: **Journal to Mine** $DNX$ once every 24 hours.
             </p>
             <p id="user-info" class="text-sm mt-2 text-gray-600">
                 User ID: <span id="user-id" class="text-xs text-gray-700">Loading...</span>
@@ -185,64 +246,58 @@
         <!-- Main Stats & Balance -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
             <div class="miner-card p-4 rounded-xl">
-                <p class="text-sm font-medium text-gray-400">Your $DNX Balance</p>
+                <p class="text-sm font-medium text-gray-400">Your $DNX$ Balance</p>
                 <p id="dnx-balance" class="text-3xl font-bold text-white mt-1">0.0000</p>
             </div>
             <div class="miner-card p-4 rounded-xl">
-                <p class="text-sm font-medium text-gray-400">Consciousness Rate (DNX/Hr)</p>
-                <p id="hash-rate" class="text-3xl font-bold text-white mt-1">0.0000</p>
+                <p class="text-sm font-medium text-gray-400">Reward Per Mint</p>
+                <p id="tap-reward" class="text-3xl font-bold text-white mt-1">0.0500</p>
             </div>
             <div class="miner-card p-4 rounded-xl">
-                <p class="text-sm font-medium text-gray-400">Weekly $DNX Cap</p>
-                <p class="text-3xl font-bold text-white mt-1 text-green-400">2.0000</p>
+                <p class="text-sm font-medium text-gray-400">Next $DNX$ Mint in</p>
+                <p id="mint-remaining" class="text-xl sm:text-3xl font-bold text-green-400 mt-1">0h 0m 0s</p>
             </div>
         </div>
 
         <!-- Mining and Educational Claim Section -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-            <!-- 1. Idle Mining Progress (The Daily Seed) -->
-            <div class="miner-card p-6 rounded-xl">
-                <h2 class="text-2xl font-semibold mb-4 text-white">Daily Depth Seed</h2>
-                <p class="text-sm text-gray-400 mb-4">Your passive rate plants the seed. View today's insight to claim your $DNX.</p>
+            <!-- 1. Journal Entry Area -->
+            <div class="miner-card p-6 rounded-xl lg:col-span-1">
+                <h2 class="text-2xl font-semibold mb-4 text-white">Daily Conscious Journal</h2>
+                <p class="text-sm text-gray-400 mb-4">Plant your daily seed of self-awareness. Submission requires a minimum of **50 characters**.</p>
                 
-                <div class="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
-                    <p class="text-gray-300 font-semibold">Earned This Week (Ready to Claim)</p>
-                    <p id="dnx-earned" class="text-xl font-extrabold text-teal-400">0.0000 $DNX</p>
-                </div>
+                <div id="mining-status" class="cooldown-text text-center py-2 mb-4 text-yellow-300 rounded-lg">Checking Mint Eligibility...</div>
                 
-                <div id="mining-status" class="text-sm text-center py-2 mb-4 text-yellow-300 rounded-lg">Mining Active</div>
+                <!-- Journal Prompt and Input -->
+                <p class="text-white font-medium mb-2 text-sm">Today's Prompt: <span class="text-violet-400 italic">"What is one concept or idea that challenged your perspective today, and how did you process it?"</span></p>
                 
-                <div class="flex space-x-4">
-                    <button id="claim-button"
-                        onclick="claimDnx()"
-                        class="flex-1 px-6 py-3 rounded-xl bg-violet-600 text-white font-bold button-primary disabled:opacity-50 disabled:cursor-not-allowed hover:bg-violet-700">
-                        View Today's Insight (Earn $DNX)
-                    </button>
-                    <button id="manual-mine-button"
-                        onclick="manualMine()"
-                        class="px-4 py-3 rounded-xl bg-gray-700 text-white font-bold button-primary hover:bg-gray-600 text-sm">
-                        Focus Boost (Tap)
-                    </button>
-                </div>
-                <p id="claim-message" class="text-xs text-center mt-2 h-4 text-red-400"></p>
-                
+                <textarea id="journal-input" rows="5" placeholder="Write your reflective entry here... (Min 50 characters)"
+                    class="w-full p-3 mb-4 rounded-lg bg-gray-800 border border-gray-700 text-white focus:ring-violet-500 focus:border-violet-500"></textarea>
+
+                <button id="mine-button"
+                    onclick="submitJournalEntry()"
+                    class="w-full px-6 py-4 rounded-xl bg-violet-600 text-white text-xl font-bold button-primary disabled:opacity-50 disabled:cursor-not-allowed hover:bg-violet-700">
+                    Submit Journal Entry
+                </button>
+
+                <p id="claim-message" class="text-xs text-center mt-3 h-4 text-red-400"></p>
             </div>
 
-            <!-- 2. Hash Rate Upgrades -->
-            <div class="miner-card p-6 rounded-xl">
+            <!-- 2. Entry Reward Upgrades and Ledger Button -->
+            <div class="miner-card p-6 rounded-xl lg:col-span-1 flex flex-col">
                 <h2 class="text-2xl font-semibold mb-4 text-white">Cultivate Awareness</h2>
-                <p class="text-sm text-gray-400 mb-4">Invest your $DNX to increase your passive Consciousness Rate.</p>
+                <p class="text-sm text-gray-400 mb-4">Invest $DNX$ to increase your reward per daily journal entry **when minting is available**.</p>
 
-                <div id="upgrades">
+                <div id="upgrades" class="flex-grow">
                     <!-- Upgrade 1 -->
                     <div class="flex justify-between items-center bg-gray-800 p-3 rounded-lg mb-3">
                         <div>
                             <p class="text-lg font-semibold">Micro-Focus Module</p>
-                            <p class="text-xs text-gray-400">Increase rate by +0.0005 DNX/Hr</p>
+                            <p class="text-xs text-gray-400">Increase entry reward by +0.010 $DNX$</p>
                         </div>
-                        <button onclick="buyUpgrade(0.5, 0.0005)"
+                        <button onclick="buyUpgrade(0.5, 0.0100)"
                             class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-green-700">
-                            Cost: 0.5 $DNX
+                            Cost: 0.5 $DNX$
                         </button>
                     </div>
 
@@ -250,43 +305,52 @@
                     <div class="flex justify-between items-center bg-gray-800 p-3 rounded-lg mb-3">
                         <div>
                             <p class="text-lg font-semibold">Systemic Clarity Upgrade</p>
-                            <p class="text-xs text-gray-400">Increase rate by +0.0050 DNX/Hr</p>
+                            <p class="text-xs text-gray-400">Increase entry reward by +0.050 $DNX$</p>
                         </div>
-                        <button onclick="buyUpgrade(5.0, 0.0050)"
+                        <button onclick="buyUpgrade(5.0, 0.0500)"
                             class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-green-700">
-                            Cost: 5.0 $DNX
+                            Cost: 5.0 $DNX$
                         </button>
                     </div>
+                </div>
+
+                <!-- Private Ledger Button -->
+                <div class="mt-6 border-t border-gray-700 pt-4">
+                    <button id="ledger-button"
+                        onclick="openLedgerModal()"
+                        class="w-full px-6 py-3 rounded-xl bg-gray-700 text-white font-bold button-primary hover:bg-gray-600">
+                        View Private Ledger (Growth Tracker)
+                    </button>
                 </div>
             </div>
         </div>
 
-        <!-- Referral Monetization Simulation (Ecosystem Synergy) -->
+        <!-- Ecosystem Synergy Tasks -->
         <div class="miner-card p-6 rounded-xl">
             <h2 class="text-2xl font-semibold mb-4 text-white">Ecosystem Synergy Tasks</h2>
-            <p class="text-sm text-gray-400 mb-4">Complete one-time onboarding tasks for the main $DEPTH project to earn bonus $DNX, cementing your connection to the core network.</p>
+            <p class="text-sm text-gray-400 mb-4">Complete one-time onboarding tasks for the main $DEPTH$ project to earn bonus $DNX$, cementing your connection to the core network.</p>
             
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="task-list">
                 <!-- Task 1: Wallet Sign-Up -->
                 <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
                     <div>
-                        <p class="font-semibold text-white">Install $DEPTH Wallet</p>
+                        <p class="font-semibold text-white">Install $DEPTH$ Wallet</p>
                         <p class="text-xs text-gray-400">Secure your entry point to the conscious economy.</p>
                     </div>
                     <button id="task-1" onclick="completeTask(0.1, 1)"
                         class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
-                        Earn 0.1 $DNX
+                        Earn 0.1 $DNX$
                     </button>
                 </div>
                 <!-- Task 2: KYC/Verification -->
                 <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center">
                     <div>
                         <p class="font-semibold text-white">Verify Digital Identity</p>
-                        <p class="text-xs text-gray-400">Align your identity with the $DEPTH platform.</p>
+                        <p class="text-xs text-gray-400">Align your identity with the $DEPTH$ platform.</p>
                     </div>
                     <button id="task-2" onclick="completeTask(0.2, 2)"
                         class="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-bold button-primary hover:bg-purple-700">
-                        Earn 0.2 $DNX
+                        Earn 0.2 $DNX$
                     </button>
                 </div>
             </div>
@@ -294,127 +358,240 @@
         
     </div>
 
+    <!-- Private Ledger Modal -->
+    <div id="ledger-modal" class="modal fixed inset-0 hidden items-center justify-center p-4" onclick="closeLedgerModal(event)">
+        <div class="modal-content w-full max-w-2xl rounded-xl p-6 overflow-y-auto" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center border-b border-gray-700 pb-3 mb-4">
+                <h2 class="text-2xl font-bold text-white">Private Reflection Ledger</h2>
+                <button onclick="closeLedgerModal()" class="text-gray-400 hover:text-white text-3xl leading-none">&times;</button>
+            </div>
+            
+            <p id="ledger-loading" class="text-center text-violet-400 py-8">Loading your past entries...</p>
+            <div id="ledger-entries-list" class="space-y-4">
+                <!-- Journal entries will be inserted here -->
+            </div>
+            <p id="ledger-empty" class="text-center text-gray-500 py-8 hidden">Your Ledger is empty. Submit your first journal entry!</p>
+        </div>
+    </div>
+
+
     <script type="module">
         // Global Game State (will be overridden by Firestore when ready)
-        window.weeklyCap = 2.0;
         window.dnxBalance = 0.0;
-        window.hashRate = 0.0001; // DNX per hour
-        window.dnxEarnedThisWeek = 0.0;
+        window.tapReward = 0.05; // Initial reward per entry
+        window.lastTapTimestamp = 0; 
         window.taskCompleted = { 1: false, 2: false };
 
-        let gameLoopInterval;
+        // Constants
+        const MINT_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+        const MIN_CHARACTERS = 50;
+
+        let uiUpdateInterval;
         const saveInterval = 30000; // Save every 30 seconds
 
         // --- Core Game Logic ---
 
+        function formatTimeRemaining(ms) {
+            if (ms <= 0) return "0h 0m 0s";
+            const hours = Math.floor(ms / (1000 * 60 * 60));
+            const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+            const seconds = Math.floor((ms % (1000 * 60)) / 1000);
+            return `${hours}h ${minutes}m ${seconds}s`;
+        }
+
         function updateUI() {
             document.getElementById('dnx-balance').textContent = window.dnxBalance.toFixed(4);
-            document.getElementById('hash-rate').textContent = window.hashRate.toFixed(4);
-            document.getElementById('dnx-earned').textContent = window.dnxEarnedThisWeek.toFixed(4) + ' $DNX';
-
-            const claimButton = document.getElementById('claim-button');
+            document.getElementById('tap-reward').textContent = window.tapReward.toFixed(4);
             
-            // Check if claim is possible
-            const canClaim = window.dnxEarnedThisWeek > 0.00005;
-            claimButton.disabled = !canClaim;
-            claimButton.classList.toggle('button-disabled', !canClaim);
+            const mineButton = document.getElementById('mine-button');
+            const miningStatus = document.getElementById('mining-status');
+            const mintRemainingDisplay = document.getElementById('mint-remaining');
+            const now = Date.now();
+            
+            const timeSinceLastMint = now - window.lastTapTimestamp;
+            const timeRemaining = Math.max(0, MINT_COOLDOWN_MS - timeSinceLastMint);
+            
+            const isMintReady = timeRemaining === 0;
+
+            if (isMintReady) {
+                miningStatus.textContent = "MINT READY: Next entry will earn $DNX$";
+                miningStatus.style.backgroundColor = 'var(--mint-ready)';
+                miningStatus.style.color = '#000';
+                mintRemainingDisplay.textContent = "NOW!";
+                mintRemainingDisplay.style.color = 'var(--mint-ready)';
+                mineButton.textContent = `Submit Journal Entry & MINT ${window.tapReward.toFixed(4)} $DNX$`;
+            } else {
+                miningStatus.textContent = "Minting is on Cooldown. Entry will only be saved.";
+                miningStatus.style.backgroundColor = '#4b5563'; /* Gray background for cooldown */
+                miningStatus.style.color = '#e5e7eb';
+                mintRemainingDisplay.textContent = formatTimeRemaining(timeRemaining);
+                mintRemainingDisplay.style.color = '#fcd34d'; /* Amber for countdown */
+                mineButton.textContent = "Submit Journal Entry (No Mint)";
+            }
+
+            mineButton.disabled = false;
+            mineButton.classList.remove('button-disabled');
 
             // Update tasks UI
             document.getElementById('task-1').disabled = window.taskCompleted[1];
             document.getElementById('task-2').disabled = window.taskCompleted[2];
             document.getElementById('task-1').classList.toggle('button-disabled', window.taskCompleted[1]);
             document.getElementById('task-2').classList.toggle('button-disabled', window.taskCompleted[2]);
-
-            if (window.dnxEarnedThisWeek >= window.weeklyCap) {
-                document.getElementById('mining-status').textContent = 'Weekly Cap Reached. View Insight to claim & reset.';
-                document.getElementById('mining-status').classList.remove('text-yellow-300');
-                document.getElementById('mining-status').classList.add('text-red-500');
-            } else {
-                document.getElementById('mining-status').textContent = 'Consciousness Rate Active';
-                document.getElementById('mining-status').classList.remove('text-red-500');
-                document.getElementById('mining-status').classList.add('text-yellow-300');
-            }
         }
 
-        function startMiningLoop() {
-            if (gameLoopInterval) clearInterval(gameLoopInterval);
-
-            // 1 second tick
-            gameLoopInterval = setInterval(() => {
-                // Calculate DNX earned per second (Hash Rate / 3600 seconds)
-                const dnxPerSecond = window.hashRate / 3600;
-
-                if (window.dnxEarnedThisWeek < window.weeklyCap) {
-                    window.dnxEarnedThisWeek += dnxPerSecond;
-                    
-                    if (window.dnxEarnedThisWeek > window.weeklyCap) {
-                        window.dnxEarnedThisWeek = window.weeklyCap;
-                    }
-                }
-                updateUI();
-            }, 1000);
+        function startUIUpdateLoop() {
+            if (uiUpdateInterval) clearInterval(uiUpdateInterval);
+            // Run every second to update the countdown timer
+            uiUpdateInterval = setInterval(updateUI, 1000); 
         }
 
-        // Simulates the educational snippet/news engagement
-        window.claimDnx = async function() {
-            const amountToClaim = window.dnxEarnedThisWeek;
-            if (amountToClaim <= 0) {
-                document.getElementById('claim-message').textContent = "Nothing earned yet. Let your focus build!";
-                setTimeout(() => document.getElementById('claim-message').textContent = '', 2000);
+
+        // Primary Journal Submission function (conditional minting)
+        window.submitJournalEntry = async function() {
+            const now = Date.now();
+            const journalInput = document.getElementById('journal-input');
+            const journalText = journalInput.value.trim();
+            const mineButton = document.getElementById('mine-button');
+            
+            const timeSinceLastMint = now - window.lastTapTimestamp;
+            const isMintReady = timeSinceLastMint >= MINT_COOLDOWN_MS;
+            let didMint = false;
+            let reward = 0.0;
+
+
+            if (journalText.length < MIN_CHARACTERS) {
+                document.getElementById('claim-message').textContent = `Entry is too short (${journalText.length} chars). Minimum ${MIN_CHARACTERS} characters required for reflection.`;
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 3000);
                 return;
             }
 
-            // Simulate reading/watching the Insight (5 seconds for impact)
-            const claimButton = document.getElementById('claim-button');
-            const originalText = claimButton.textContent;
+            // Temporarily disable the button during submission
+            mineButton.disabled = true;
+            const originalText = mineButton.textContent;
+            mineButton.textContent = 'Securing Insight...';
+            document.getElementById('mining-status').textContent = "Processing and Securing Entry...";
+
+            // Simulate the network and processing delay
+            await new Promise(resolve => setTimeout(resolve, 2000)); 
+
+            if (isMintReady) {
+                // Perform the minting transaction
+                reward = window.tapReward;
+                window.dnxBalance += reward;
+                window.lastTapTimestamp = now; // Reset the 24-hour clock
+                didMint = true;
+            }
             
-            claimButton.disabled = true;
-            claimButton.textContent = 'Engaging with Insight (5s) - Cultivating Depth...';
-            document.getElementById('manual-mine-button').disabled = true;
+            // Save the journal entry to the history collection (always happens)
+            await saveJournalEntry(journalText, didMint, reward);
 
-            await new Promise(resolve => setTimeout(resolve, 5000)); // 5 second engagement delay
+            // Clear the input and restore the button
+            journalInput.value = '';
+            mineButton.textContent = originalText;
+            mineButton.disabled = false;
 
-            // Re-enable interactions
-            claimButton.textContent = originalText;
-            document.getElementById('manual-mine-button').disabled = false;
+            if (didMint) {
+                document.getElementById('claim-message').textContent = `SUCCESS: Entry MINTED ${reward.toFixed(4)} $DNX$! Next mint is available in 24 hours.`;
+            } else {
+                document.getElementById('claim-message').textContent = `Journal entry secured. Minting paused. Continue reflecting!`;
+            }
+            setTimeout(() => document.getElementById('claim-message').textContent = '', 4000);
 
-            // Perform the transaction
-            window.dnxBalance += amountToClaim;
-            window.dnxEarnedThisWeek = 0; // Reset the weekly pool
-
-            document.getElementById('claim-message').textContent = `SUCCESS: Claimed ${amountToClaim.toFixed(4)} $DNX! Weekly pool reset.`;
-            setTimeout(() => document.getElementById('claim-message').textContent = '', 3000);
-
-            saveGameState(); // Save the new balance
+            saveGameState(); // Save the new state
             updateUI();
         }
 
-        // Simulates the manual tap-to-earn focus boost
-        window.manualMine = function() {
-            const boostAmount = 0.0001;
-            if (window.dnxEarnedThisWeek < window.weeklyCap) {
-                window.dnxEarnedThisWeek += boostAmount;
-                if (window.dnxEarnedThisWeek > window.weeklyCap) {
-                    window.dnxEarnedThisWeek = window.weeklyCap;
-                }
-                document.getElementById('claim-message').textContent = `Focus Boost: +${boostAmount.toFixed(4)} $DNX`;
-                setTimeout(() => document.getElementById('claim-message').textContent = '', 1000);
-                updateUI();
-                saveGameState();
-            } else {
-                document.getElementById('claim-message').textContent = `Cannot boost, weekly cap reached!`;
-                setTimeout(() => document.getElementById('claim-message').textContent = '', 2000);
-            }
-        }
-
         // Simulates buying upgrades
-        window.buyUpgrade = function(cost, rateIncrease) {
+        window.buyUpgrade = function(cost, rewardIncrease) {
             if (window.dnxBalance >= cost) {
                 window.dnxBalance -= cost;
-                window.hashRate += rateIncrease;
-                document.getElementById('claim-message').textContent = `Awareness Cultivated! Rate is now ${window.hashRate.toFixed(4)} DNX/Hr.`;
+                window.tapReward += rewardIncrease;
+                document.getElementById('claim-message').textContent = `Awareness Cultivated! Reward is now ${window.tapReward.toFixed(4)} $DNX$ per mint.`;
                 setTimeout(() => document.getElementById('claim-message').textContent = '', 3000);
                 updateUI();
                 saveGameState();
             } else {
-                document.getElementById('claim-message').textCo
+                document.getElementById('claim-message').textContent = "Insufficient $DNX$ balance!";
+                setTimeout(() => document.getElementById('claim-message').textContent = '', 2000);
+            }
+        }
+        
+        // Simulates completing a one-time referral/sign-up task
+        window.completeTask = function(reward, taskId) {
+            if (window.taskCompleted[taskId]) return;
+
+            window.dnxBalance += reward;
+            window.taskCompleted[taskId] = true;
+            
+            document.getElementById('claim-message').textContent = `Task ${taskId} completed! Deepened the Nexus, earned ${reward.toFixed(1)} $DNX$.`;
+            setTimeout(() => document.getElementById('claim-message').textContent = '', 3000);
+            
+            updateUI();
+            saveGameState();
+        }
+
+        // --- Ledger Modal Logic ---
+
+        window.openLedgerModal = async function() {
+            document.getElementById('ledger-modal').classList.remove('hidden');
+            document.getElementById('ledger-modal').classList.add('flex');
+            document.getElementById('ledger-loading').classList.remove('hidden');
+            document.getElementById('ledger-empty').classList.add('hidden');
+            document.getElementById('ledger-entries-list').innerHTML = '';
+
+            const entries = await fetchJournalEntries();
+
+            document.getElementById('ledger-loading').classList.add('hidden');
+
+            const listContainer = document.getElementById('ledger-entries-list');
+            
+            if (entries.length === 0) {
+                document.getElementById('ledger-empty').classList.remove('hidden');
+                return;
+            }
+
+            entries.forEach(entry => {
+                const date = new Date(entry.timestamp).toLocaleString();
+                const textSnippet = entry.text.substring(0, 150) + (entry.text.length > 150 ? '...' : '');
+                
+                let mintStatus;
+                if (entry.wasMinted) {
+                    mintStatus = `<span class="text-green-400 font-semibold">Minted ${entry.dnxReward.toFixed(4)} $DNX$</span>`;
+                } else {
+                    mintStatus = `<span class="text-yellow-400 font-semibold">Saved (No Mint)</span>`;
+                }
+
+                const entryHtml = `
+                    <div class="bg-gray-800 p-4 rounded-lg border-l-4 ${entry.wasMinted ? 'border-green-500' : 'border-yellow-500'}">
+                        <div class="flex justify-between items-center mb-2">
+                            <p class="text-sm text-gray-400">${date}</p>
+                            ${mintStatus}
+                        </div>
+                        <p class="text-white text-md italic whitespace-pre-wrap">${textSnippet}</p>
+                    </div>
+                `;
+                listContainer.insertAdjacentHTML('beforeend', entryHtml);
+            });
+        }
+
+        window.closeLedgerModal = function(event) {
+            // Only close if clicked on the modal background itself, not content
+            if (!event || event.currentTarget.id === 'ledger-modal') {
+                document.getElementById('ledger-modal').classList.add('hidden');
+                document.getElementById('ledger-modal').classList.remove('flex');
+            }
+        }
+
+
+        // --- Initialization ---
+
+        window.onload = function() {
+            setupFirebase();
+            startUIUpdateLoop();
+            // Setup regular save interval only after Firebase is initialized
+            setInterval(saveGameState, saveInterval);
+        };
+
+    </script>
+</body>
+</html>
